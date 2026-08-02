@@ -1,1 +1,18 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DS_Store?
+*~
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
