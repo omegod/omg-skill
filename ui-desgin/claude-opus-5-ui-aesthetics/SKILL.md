@@ -1,6 +1,6 @@
 ---
-name: ui-aesthetics
-description: 在生成任何界面 UI 之前必读——网页、Web App、后台、落地页、移动端、组件、设计系统、HTML/React/Vue/Tailwind artifact、原型图。用于把"能用的 UI"提升为"高级、克制、和谐的 UI"，并消除 AI 生成界面的通病（紫蓝渐变、卡片堆砌、圆角与阴影滥用、彩度失控、层级平坦）。触发词：UI、界面、页面、样式、美化、好看、高级感、设计、配色、主题、暗色模式、落地页、后台、仪表盘、组件库、design system、landing page、dashboard、redesign、make it pretty/beautiful/modern。
+name: claude-opus-5-ui-aesthetics
+description: 在生成任何界面 UI 之前必读——网页、Web App、后台、落地页、移动端、组件、设计系统、HTML/React/Vue/Tailwind artifact、原型图。用于把"能用的 UI"提升为"高级、克制、和谐的 UI"，并消除 AI 生成界面的通病（紫蓝渐变、卡片堆砌、圆角与阴影滥用、彩度失控、层级平坦）。触发词：UI、界面、页面、样式、美化、好看、高级感、设计、配色、主题、暗色模式、落地页、后台、仪表盘、组件库、design system、landing page、dashboard、redesign、make it pretty/beautiful/modern。风格来源：Claude Opus 5，克制、极简、系统化。
 ---
 
 # UI 美感

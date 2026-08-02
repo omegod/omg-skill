@@ -1,6 +1,6 @@
 ---
-name: ui-design-aesthetic
-description: 智能体 UI 美学与高级界面设计指南。用于指导 AI 智能体生成具备极高视觉水准、优雅色调、丰富质感、和谐层次与动效的现代 Web/App 界面。覆盖 SaaS、AI Copilot、数据看板、B端控制台、高端 C端 Landing Page 等多种业务场景。
+name: gemini-3.6-flash-ui-aesthetics
+description: 智能体 UI 美学与高级界面设计指南。用于指导 AI 智能体生成具备极高视觉水准、优雅色调、丰富质感、和谐层次与动效的现代 Web/App 界面。覆盖 SaaS、AI Copilot、数据看板、B端控制台、高端 C端 Landing Page 等多种业务场景。风格来源：Gemini 3.6 Flash，惊艳、质感、暗色科技感。
 ---
 
 # UI Design Aesthetic Skill | 智能体 UI 美学与高级界面设计指南
@@ -84,8 +84,8 @@ description: 智能体 UI 美学与高级界面设计指南。用于指导 AI �
 ## Skill 参考文档索引 (Reference Map)
 
 请阅读以下子文件以获取特定维度的深度指引：
-- 🎨 [01-design-system-tokens.md](file:///Users/caichenghu/Documents/Project/js-demo/ui-design-aesthetic/references/01-design-system-tokens.md) — 完整设计 Token 字典与配色方案表
-- ✨ [02-visual-aesthetics-rules.md](file:///Users/caichenghu/Documents/Project/js-demo/ui-design-aesthetic/references/02-visual-aesthetics-rules.md) — 让界面提升档次的 10 大高级感细节与光影法则
-- 🏬 [03-business-scenarios.md](file:///Users/caichenghu/Documents/Project/js-demo/ui-design-aesthetic/references/03-business-scenarios.md) — 6 大典型业务场景（SaaS, AI Copilot, Dashboard, B端, C端）设计指南
-- 🧩 [04-component-design-guide.md](file:///Users/caichenghu/Documents/Project/js-demo/ui-design-aesthetic/references/04-component-design-guide.md) — 高品质前端 UI 组件 CSS/HTML 代码标准
-- 🖥️ [modern-dashboard-demo.html](file:///Users/caichenghu/Documents/Project/js-demo/ui-design-aesthetic/examples/modern-dashboard-demo.html) — 完整的高级暗黑风 Dashboard HTML 示范代码
+- 🎨 [01-design-system-tokens.md](references/01-design-system-tokens.md) — 完整设计 Token 字典与配色方案表
+- ✨ [02-visual-aesthetics-rules.md](references/02-visual-aesthetics-rules.md) — 让界面提升档次的 10 大高级感细节与光影法则
+- 🏬 [03-business-scenarios.md](references/03-business-scenarios.md) — 6 大典型业务场景（SaaS, AI Copilot, Dashboard, B端, C端）设计指南
+- 🧩 [04-component-design-guide.md](references/04-component-design-guide.md) — 高品质前端 UI 组件 CSS/HTML 代码标准
+- 🖥️ [modern-dashboard-demo.html](examples/modern-dashboard-demo.html) — 完整的高级暗黑风 Dashboard HTML 示范代码
