@@ -165,6 +165,15 @@ def main():
          {k: sw.get(k) for k in ("origin_x", "origin_y", "point_w", "point_h",
                                  "scale", "window_id")})
 
+    # 4c. cu 2.3: screenshot --region-px — PNG 像素必须等于请求像素（-R 不得被 -D 覆盖），
+    # 且 scale 必须复位到上一张实测值，否则会污染下一次 --region-px 的换算
+    sr = cu("screenshot", "--region-px", "0", "0", "800", "600",
+            "--out", "/tmp/cu-e2e-region.png")
+    okr = (sr.get("ok") and sr.get("pixel_w") == 800 and sr.get("pixel_h") == 600
+           and abs((sr.get("scale") or 0) - (sw.get("scale") or 0)) < 0.02)
+    step("screenshot-region-px", okr,
+         {k: sr.get(k) for k in ("pixel_w", "pixel_h", "point_w", "point_h", "scale")})
+
     # 5. click into the text area (screen points from window bounds)
     cx, cy = te["x"] + te["w"] // 2, te["y"] + min(int(te["h"] * 0.4), 350)
     step("click-textarea", cu("click", str(cx), str(cy), "--mode", "pts").get("ok"), (cx, cy))

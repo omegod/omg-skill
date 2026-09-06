@@ -12,7 +12,9 @@ and cu 2.1 background channel (--app pid dispatch + AXDescription):
   Finder 抢前台) → ax state（编号句柄 set/attr 回读 + --text 过滤 + 越界 fail-closed）
   → Chrome 大页面 state（skip-if-absent：预算内完成/交互优先/菜单 0×0 过滤）
   → QQ音乐 desc-tree + background space toggle (skip-if-absent) →
-  screenshot --region-px argparse 回归 → cleanup.
+  cu 2.4 open 契约回归（冷启 --background mode=launched_cold 不抢前台 /
+  already_running skip 不造窗不激活 / QQ音乐 --force reopen 如实报告
+  foreground_stolen_by 并恢复前台）→ screenshot --region-px argparse 回归 → cleanup.
 
 实测约束（已同步 SKILL.md）：
   * 菜单项 AXPress 仅对激活态应用生效（后台回执 ok 但不执行）→ 菜单阶段先 open -a。
@@ -142,7 +144,16 @@ def main():
                            "com.apple.TextEdit.savedState"),
     ):
         subprocess.run(["rm", "-rf", state_dir], capture_output=True)
-    subprocess.run(["open", "-g", "-a", "TextEdit"], capture_output=True)
+    # open --background（cu 2.4）：冷启 -g 后台唤起不抢前台——TextEdit 已 killall
+    # 不可能在前台；新契约 mode=launched_cold + frontmost_before/after 如实对账
+    ob, _ = cu("open", "TextEdit", "--background", "--settle", "2500")
+    step("open-background-no-foreground",
+         ob.get("ok") and ob.get("mode") == "launched_cold"
+         and ob.get("frontmost_after") == ob.get("frontmost_before")
+         and ob.get("frontmost_after") != "TextEdit",
+         {"opened": ob.get("opened"), "mode": ob.get("mode"),
+          "frontmost_before": ob.get("frontmost_before"),
+          "frontmost_after": ob.get("frontmost_after")})
     pid = None
     for _ in range(10):
         pid = textedit_pid()
@@ -152,6 +163,29 @@ def main():
     if not step("launch-background", pid is not None, f"pid={pid}"):
         finish()
         return 1
+    # 1b. already_running skip（cu 2.4）：已运行 + --background 不发 open 事件——
+    # 不造新窗、不抢前台（已运行 app 收 reopen 会自激活，-g 按不住，直接跳过最稳）。
+    # 先等冷启窗口态稳定再取基线：TextEdit 后台冷启会异步开出初始文稿窗口（>3s）
+    prev_wins = len(doc_windows(pid))
+    for _ in range(12):
+        time.sleep(1.0)
+        cur_wins = len(doc_windows(pid))
+        if cur_wins == prev_wins:
+            break
+        prev_wins = cur_wins
+    wins_before_skip = prev_wins
+    ob2, _ = cu("open", "TextEdit", "--background")
+    time.sleep(0.8)
+    front_after_skip = cu("frontmost")[0].get("name")
+    step("open-already-running-skip",
+         ob2.get("ok") and ob2.get("mode") == "already_running"
+         and ob2.get("via") == "resolve" and ob2.get("pid") == pid
+         and len(doc_windows(pid)) == wins_before_skip
+         and front_after_skip != "TextEdit",
+         {"mode": ob2.get("mode"), "pid": ob2.get("pid"),
+          "windows": ob2.get("windows"),
+          "frontmost_after": ob2.get("frontmost_after"),
+          "front_actual": front_after_skip})
     subprocess.run(["open", "-a", "TextEdit"], capture_output=True)
     time.sleep(0.8)
     step("windows-cleared", clear_windows(pid), doc_windows(pid))
@@ -446,6 +480,19 @@ def main():
         else:
             for n in ("qqm-key-app-toggle-1", "qqm-key-app-toggle-2-restores"):
                 step(n, False, "skipped")
+
+        # --force 重开已运行实例（cu 2.4）：reopen 会自激活抢前台（QQ音乐 实测
+        # 0.5~4s 落地）——契约要求如实报告 foreground_stolen_by 并恢复前台
+        of_, _ = cu("open", "--bundle-id", "com.tencent.QQMusicMac",
+                    "--background", "--force", "--settle", "4000")
+        time.sleep(0.5)
+        step("qqm-force-reopen-restore",
+             of_.get("ok") and of_.get("mode") == "forced_reopen"
+             and of_.get("frontmost_after") == of_.get("frontmost_before"),
+             {"mode": of_.get("mode"), "stolen_by": of_.get("foreground_stolen_by"),
+              "restored": of_.get("frontmost_restored"),
+              "frontmost_before": of_.get("frontmost_before"),
+              "frontmost_after": of_.get("frontmost_after")})
 
     # 14. screenshot --region-px argparse 回归：曾因未定义 --pts 而 AttributeError（cu 2.2）
     # 无录屏权限的宿主上走到 screencapture 失败也是 PASS——崩溃点在更早的 rect 计算

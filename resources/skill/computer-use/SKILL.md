@@ -20,6 +20,8 @@ bash <skill目录>/scripts/cu.sh doctor
 - `ok: true` → 两个权限齐备，继续。分项状态见 `checks.status`：
   `accessibility`（AX 读写 + 键鼠注入）与 `screen-recording`（截屏）。
   `stale` = 已授权但宿主未重启，AX/截屏仍会失败 → 让用户完全重启宿主 App。
+  accessibility 的 stale 由 doctor 实测探出；**screen-recording 的 stale 检不出**
+  （preflight 照样 ok），指纹是截图回 ok 但内容只有壁纸。
 - `ok: false` → 按 `notes` 提示用户在 System Settings → Privacy & Security 中给
   **宿主 App**（终端/编辑器）开权限。macOS 26 每次切换开关都要求触控 ID/密码认证，
   只能由用户本人完成（不要绕过）。授权完成前不要继续尝试操作。
@@ -64,6 +66,13 @@ apps → ax state <app>（大页面/找可交互元素首选）或 ax tree <app>
 7. **媒体/播放状态验证 oracle（纯文本，无需截屏）**：Chrome 窗口标题「正在播放音频」后缀；
    播放菜单项标题翻转（播放↔暂停）；播放控制栏元素 `desc`（如 `歌曲名：X - 歌手名：Y`、
    播放/暂停播放）；进度时间文本。
+8. **后台唤起用 `open --background`，成败判定读 `frontmost_after`**（不许只看 `mode`/
+   退出码）：`--background` 是结束状态保证，结束后前台必须仍是 `frontmost_before`。
+   已运行 app 加 `--background` 会按已运行跳过（`mode:"already_running"`，不发 open
+   事件、不造窗）；要重开其窗口加 `--force`（`mode:"forced_reopen"`）。app 自激活抢
+   前台时（QQ音乐 类实测 0.5~4s 落地）契约如实报 `foreground_stolen_by`，恢复已自动
+   执行（inline + 12s 单发看门狗兜迟到的重放）；恢复都失败才 `ok:false
+   code:"foreground_stolen"`。
 
 ### 无视觉模型的边界（纯文本模型必读）
 
@@ -94,14 +103,14 @@ screenshot → 看图定位（不确定就 region 放大或 ocr）→ 执行一�
 
 | 命令 | 作用 | 关键参数 |
 |---|---|---|
-| `doctor` | 分项权限自检（accessibility/screen-recording: ok/stale/denied） | — |
+| `doctor` | 分项权限自检（accessibility: ok/stale/denied；screen-recording: ok/denied/unknown——stale 检不出，见 §0） | — |
 | `apps` | 运行中 GUI 应用（pid/bundle_id/name/frontmost/hidden） | — |
 | `frontmost` | 当前前台应用 | — |
 | `windows` | 可见窗口（window_id/owner/边界） | `--pid N` 按进程过滤 |
 | `displays` | 显示器列表 | — |
 | `screenshot` | 截屏（PNG + 坐标元数据） | `--display N` `--out P` `--region-px X Y W H`（加 `--pts` 按屏幕点） `--window <id>` |
 | `ocr` | 本地 Vision OCR | `--lang zh-Hans,en-US` |
-| `open "App名"` | 启动/激活应用 | `--bundle-id com.apple.X`、`--url "scheme://…"`、`--settle 2000` |
+| `open "App名"` | 启动/激活应用 | `--bundle-id com.apple.X`、`--url "scheme://…"`、`--settle 2000`；`--background`：后台唤起，结束后前台必须仍是 `frontmost_before`；`--force`：重开已运行实例的窗口（对已运行 app 加 `--background` 时必须一起用，否则按已运行跳过） |
 | `clipboard get/set` | 剪贴板 | — |
 | `position` / `wait MS` | 指针位置 / 等待 | — |
 
@@ -174,5 +183,6 @@ screenshot → 看图定位（不确定就 region 放大或 ocr）→ 执行一�
 ```bash
 .venv/bin/python tests/test_coords.py     # 坐标/键码单测（无权限要求）
 .venv/bin/python scripts/e2e_ax.py        # AX 闭环 e2e（仅需辅助功能权限）
-open -a Terminal scripts/run-e2e.sh       # 视觉闭环 e2e（需录屏+辅助功能，Terminal 宿主）
+open -a Terminal scripts/run-e2e.sh       # 视觉闭环 e2e（需录屏+辅助功能，Terminal 宿主；
+                                          # 含 screenshot --region-px 断言：PNG 实际像素 == 请求尺寸、scale 复位）
 ```

@@ -1,6 +1,6 @@
 # cu 2.1 规格：后台派发与自绘应用支持
 
-状态：草案 v1（2026-09-05）。取代 cu 2.0 规格（其 M1–M4 已全部实现并通过 33/33 AX e2e + 20/20 视觉 e2e，规格作废）。
+状态：草案 v1（2026-09-05）+ 增补 2.2/2.3/2.4（2026-09-06）。取代 cu 2.0 规格（其 M1–M4 已全部实现并通过 33/33 AX e2e + 20/20 视觉 e2e，规格作废）。
 对标基线：ZCode CUA 插件 0.5.14（30 工具 + 独立签名 helper `dev.zcode.cua-helper` 3.11.2）。
 约束不变：bash CLI + 纯 JSON；公开 API 优先；仅 macOS；macOS 26 的 TCC 授权只能由用户本人完成，不绕过。
 
@@ -134,3 +134,122 @@ B 站大页面实弹暴露的检索短板：`ax find` 全树 DFS 在 1000+ 节�
 - 站点行为结论（详见 troubleshooting）：播放中控制栏隐藏时 AXPress 无效，
   暂停态有效；空格依赖焦点；`ax attr w0` 对媒体页窗口标题必 stale（标题含
   播放态后缀），验证读值应重新 dump。
+
+## 7. 2.3 增补（已实现）：--region-px 裁剪修复
+
+opencode 宿主（macOS 26，有录屏权限）实测暴露：AttributeError 修复后裁剪本身仍不生效——
+`screenshot --region-px 0 0 800 600` 返回 ok 但 PNG 仍是 3420×2224 全屏，且 meta 被污染
+（origin 168,219 为上次 `--window` 残留属正常语义；**scale 8.55 = 3420÷400 是病征**），
+下一次调用 `point_w 46.78 = 400÷8.55` 跨调用累积错乱。
+
+根因两层：
+
+1. **`screencapture -D N -R x,y,w,h` 同用时 `-R` 被忽略**（macOS 26 实测，man 页未写交互
+   语义）：命令里 `-R` 拼进去了，但 `-D` 整屏生效，输出全屏 PNG。
+2. **捕获后无尺寸校验**：meta 的 `scale = PNG宽 ÷ 区域点宽` 用实际 PNG 反推——裁剪没发生
+   时算出 8.55 这种垃圾 scale 并落盘，把单次失败放大成链式污染。
+
+修复（cu 2.3）：
+
+- **区域捕获命令去掉 `-D`**：`screencapture -x -R x,y,w,h out.png`——`-R` 接受全局点坐标
+  自带显示选择，与 `-D` 互斥；全屏捕获路径保留 `-D` 不变。
+- **捕获后 fail-closed 校验**：PNG 实际像素必须等于期望值（±2px 容差），不符立即报错
+  `region crop not applied: requested NxM px, got WxH`，**不写 meta**——裁剪静默失败
+  从"污染后续所有换算"降级为"本次明确报错"。
+- **期望值 = resolve_rect 的逆运算，scale 只能用换算时的同一个实测值**（image 模式期望
+  == 输入像素；pts 模式 = 点 × prev scale），纯函数 `region_expected_px` 可独立验证。
+  第一版曾用 CGDisplayPixelsWide ÷ point_w 估算显示 scale，被验证宿主打脸：macOS 26 上
+  CGDisplayPixelsWide 返回**点数**（1710）而非物理像素（3420），期望被算成 400×300，
+  把已正确裁出的 800×600 误报为失败。教训：断言基准不能依赖显示 API 口径，只能用
+  同一管线自己量出来的数。
+
+验证义务（交付门槛，实测教训）：在**有录屏权限的宿主**上跑
+`scripts/e2e_test.py`（`open -a Terminal scripts/run-e2e.sh`），其中 4c 步
+`screenshot-region-px` 断言 **PNG 实际像素 == 请求尺寸** 且 scale 复位；仅跑 e2e_ax 的
+no-crash 步不构成裁剪功能的验收。
+
+## 8. 2.4 增补（已实现）：open --background 与 doctor stale 口径纠偏
+
+opencode 全链路审查报出两项（核实均属实）：
+
+1. **`open` 无后台选项**：三条路径（`-b`/url/`-a`）都裸拼 `open`，"主窗口已关 + 不许切
+   前台"即死局（QQ音乐 实历）。修复：`open --background` 透传 `open -g`（man 页实证
+   "Does not bring the application to the foreground"）；输出增加 `backgrounded` 字段，
+   frontmost 保持实测原值——后台唤起时模型不得误读为"已在前台"。e2e_ax 增加
+   `open-background-no-foreground` 断言步（TextEdit 已 killall 不可能在前台）。
+2. **doctor 的 screen-recording 报不出 stale**：`"ok" if sr else "denied"` 结构上只有
+   两个出口，SKILL.md doctor 行却承诺 ok/stale/denied。且 preflight 在"已授权但宿主
+   未重启"时照样 True，doctor 无法检出该态（曾有方案"拍测试图做纯色断言"被否——
+   stale 截图是壁纸图像而非纯色，断言漏报）。修复（文档+文案路线）：
+   - status 改三态 `ok/denied/unknown`（原实现把 macOS <10.15 的 None 吞成 denied）；
+   - denied note 症状纠偏：denied 是硬失败（"could not create image"），不是静默坏图；
+     原文案把 stale 的"壁纸-only"指纹安在了 denied 头上；
+   - ok 分支新增常驻提示：stale 检不出，截图回 ok 但只有壁纸 = 重启宿主；
+   - SKILL.md §0 stale 定义与 doctor 行同步改口径。
+   - 附带（同批审查）：`clipboard set` 未检查 pbcopy 返回码，失败也回
+     `ok:true`（返回码被埋进无意义的 `r` 字段），fail-closed 破洞——已改为
+     非 0 即 fail（带 code），成功输出去掉 `r`。
+
+## 9. 2.4 终稿（已实现）：open 三段式、单发看门狗与前台读数真值化
+
+### 9.1 open 三段式（§8.1 初版被复测推翻后的最终设计）
+
+初版 `--background` 只透传 `open -g` 并回 `backgrounded` 字段。复测发现半对：
+`-g` 只约束 LaunchServices 的启动动作，**已运行 app 收到 open/reopen 事件后会
+自激活抢前台**——实测矩阵：QQ音乐/QQ/微信/VSCode/Chrome 抢；TextEdit/访达不抢
+（按 app 而定），且激活落地 0.5~4s+ 非确定。叠加用户诉求"已打开的应用不要重复
+open"，`cmd_open` 定稿三段式：
+
+- **已运行 + `--background`（无 `--force`）**：不发 open 事件，直接回
+  `{mode:"already_running", via:"resolve", pid, windows, frontmost_after}`；
+  零窗口时由调用方决定 `--force` 重开或 `key --app` 造窗。
+- **冷启 / `--url`**：`open -g` 启动 + inline 轮询抓快抢，`mode:"launched_cold"`。
+- **`--force` 且已运行**：用现有实例的 bundle-id 走 `open -b`（本地化名
+  `open -a` 实测 `Unable to find application named 'QQ音乐'`，bundle-id 才可靠），
+  `mode:"forced_reopen"`。
+- `--background` 三段共用同一结束状态保证：**结束后前台仍是 `frontmost_before`**。
+  被抢时如实报 `foreground_stolen_by`，inline 恢复（System Events 主路 +
+  activateWithOptions 备，轮次重试 + 稳定持有裁决）成功则 `ok:true`；失败
+  `ok:false code:"foreground_stolen"`——窗口可能已开出（功能达成），但后台保证
+  破了，如实报告不粉饰。`backgrounded` 字段退役。
+- SKILL.md 规则 8 写入判定规则：**成败判定读 `frontmost_after`，不许只看 mode**。
+
+### 9.2 前台读数真值化：NSWorkspace 冻结缓存坑（本轮根因）
+
+**受控实验实锤**：同进程内 `NSWorkspace.frontmostApplication()` 在无 runloop 的
+CLI 进程里是 **AppKit 连接建立时刻的冻结缓存**——用 osascript 激活 Finder 后，
+fresh osascript 与 CGWindowList 逐次读都跟踪真值，NSWorkspace 连续 6 读纹丝不动
+报旧值。此前看门狗 `restored:false` 全是它的连锁误报：采样器/主进程启动于
+ZCode 前台 → 对 QQ音乐 真实抢前台全盲；看门狗恰在激活落地瞬间启动 → 被钉死在
+QQ音乐 → 4 轮恢复检查全盲判负（osascript 其实已生效，真值早已回到 ZCode）。
+
+修复：`_frontmost_app()` 改为 **CGWindowList 最顶层 layer-0 常规窗口属主**
+（无状态 C API，逐次读即真值；regular activationPolicy 优先，取不到退
+NSWorkspace 兜底）。单点修复后所有前台读数（`frontmost_before/after`、inline
+轮询、`_hold_front`、看门狗）同口径。与 §7 的 "CGDisplayPixelsWide 在 macOS 26
+返回点数" 合并为同一条教训：**跨时刻的状态判定一律用无状态 API，不用 GUI 框架
+的缓存态；断言基准不能建立在显示/GUI API 的口径上。**
+
+### 9.3 单发看门狗（watchforeground，内部命令不进 SKILL 表）
+
+- 单发有界（12s 观察期），只盯被 open 的那个 app：前台连续两读落回 opened_pid
+  就把 restore_pid 拉回来，最多 2 次（实测重放激活会跟恢复拉锯）；用户主动切到
+  其它 app 不干预。
+- inline 恢复失败也照常 spawn（失败可能只是拉锯未平息，看门狗是最后一道兜底）。
+- `restored` 语义 = **终态裁决**：观察期结束时 restore_pid 是否稳定持有前台
+  （从未被抢也为 true）；`attempts` 数组保留每次恢复的 ok/via 供追查。
+- 结果落盘 `~/.cache/omg-computer-use/foreground-watchdog.json`。
+
+无干扰复跑实测（`open --bundle-id com.tencent.QQMusicMac --background --force`，
+高频采样对账）：t≈1.4s QQ音乐 延迟激活真实抢前台 → inline `system-events(rc=0)`
+恢复，t≈2.8s 前台回到 ZCode 并稳定保持 → 契约 `foreground_stolen_by:"QQ音乐"`,
+`frontmost_restored:true`, `frontmost_after:"ZCode"`, `ok:true`；看门狗 12s 内
+无再抢，终态 `restored:true`。时间线与采样器逐段一致。
+
+### 9.4 原生行为对照（实测记录，作设计佐证）
+
+- ZCode 原生 open_application 是 resolve-first：对已运行实例不发 open 事件、
+  不激活、不造窗（窗口全部关闭的 VSCode 也不造窗）；activate=true 才激活且有
+  postcondition 校验；无 `--force` 等价物（activate≠reopen，new_instance 是
+  另起进程）。cu 的 already_running skip 与之同思路，`--force` 补"重开窗口"语义。
+- macOS `open` 无 `--force` 类参数；`-g` 只管启动动作（见 9.1 实测矩阵）。

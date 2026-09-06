@@ -55,6 +55,13 @@ check("rect in image px", (round(rx), round(ry), round(rw), round(rh)), (100, 50
 rx, ry, rw, rh = cu.resolve_rect(200, 100, 400, 200, "pts", META)
 check("rect pts passthrough", (rx, ry, rw, rh), (200.0, 100.0, 400.0, 200.0))
 
+# region 期望像素 = resolve_rect 的逆运算：image 模式期望 == 输入像素；pts 模式乘换算时
+# 的同一个 scale。捕获后用它校验"PNG 实际尺寸"（裁剪未生效 fail-closed）。勿用
+# CGDisplayPixelsWide 量显示 scale——macOS 26 返回点数，会把正确的裁剪误报为失败。
+check("region expected px image==input", cu.region_expected_px(800, 600, "image", 2.0), (800, 600))
+check("region expected px pts 2x", cu.region_expected_px(400, 300, "pts", 2.0), (800, 600))
+check("region expected px pts 1x", cu.region_expected_px(400, 300, "pts", 1.0), (400, 300))
+
 # --- key mapping ------------------------------------------------------------
 check("keycode cmd+c base key", cu.KEY_CODES["c"], 8)
 check("keycode return", cu.KEY_CODES["return"], 36)

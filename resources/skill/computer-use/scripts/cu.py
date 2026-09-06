@@ -36,7 +36,9 @@ import time
 import Quartz
 import objc
 import ApplicationServices as AS
-from AppKit import NSWorkspace
+from AppKit import (NSApplicationActivateIgnoringOtherApps,
+                    NSApplicationActivationPolicyRegular,
+                    NSRunningApplication, NSWorkspace)
 from CoreFoundation import CFEqual, CFRange
 
 META_DIR = os.path.expanduser("~/.cache/omg-computer-use")
@@ -146,9 +148,20 @@ def resolve_rect(x, y, w, h, mode, meta):
     return rx, ry, rw, rh
 
 
+def region_expected_px(w, h, mode, scale):
+    """--region-px 的期望 PNG 像素（resolve_rect 的逆运算）：image 模式期望 == 输入像素；
+    pts 模式 = 点 × 换算用的同一个 scale。基准只信自己量出的 scale，不碰显示 API 口径
+    （CGDisplayPixelsWide 在 macOS 26 返回点数，会造出误报）。"""
+    if mode == "image":
+        return round(float(w)), round(float(h))
+    return round(float(w) * scale), round(float(h) * scale)
+
+
 # ---------------------------------------------------------------- displays
 
 def list_displays():
+    # 物理像素别用 CGDisplayPixelsWide/High 取——macOS 26 实测返回点数（与 point_w
+    # 相同），显示 scale 只能从真实截图 meta 量得（scale = pixel/point），见 cmd_screenshot。
     err, ids, count = Quartz.CGGetActiveDisplayList(16, None, None)
     if err != 0:
         fail(f"CGGetActiveDisplayList error {err}")
@@ -211,10 +224,13 @@ def cmd_screenshot(args):
         x, y, w, h = args.region_px
         # prev 可能缺键（从未截过图）——补默认值再走 resolve_rect，直传会 KeyError
         prev = load_meta(required=False) or {}
-        rect = resolve_rect(x, y, w, h, "pts" if args.pts else "image",
+        rmode = "pts" if args.pts else "image"
+        rscale = prev.get("scale") or 2.0
+        rect = resolve_rect(x, y, w, h, rmode,
                             {"origin_x": prev.get("origin_x", 0),
                              "origin_y": prev.get("origin_y", 0),
-                             "scale": prev.get("scale") or 2.0})
+                             "scale": rscale})
+        exp_px = region_expected_px(w, h, rmode, rscale)
         disp = find_display(args.display)
         region = True
     else:
@@ -229,18 +245,30 @@ def cmd_screenshot(args):
         cmd = ["screencapture", "-x", "-o", f"-l{args.window}", out_path]
         if args.cursor:
             cmd.append("-C")
+    elif region:
+        # -R 接受全局点坐标，自带显示选择；绝不能与 -D 同用——实测 macOS 26 上
+        # -D 整屏生效、-R 被忽略，输出全屏 PNG（opencode 宿主踩坑）
+        cmd = ["screencapture", "-x", "-R",
+               f"{rect[0]:.2f},{rect[1]:.2f},{rect[2]:.2f},{rect[3]:.2f}", out_path]
+        if args.cursor:
+            cmd.insert(2, "-C")
     else:
         cmd = ["screencapture", "-x", "-D", str(disp["index"]), out_path]
         if args.cursor:
             cmd.insert(2, "-C")
-        if region:
-            cmd += ["-R", f"{rect[0]:.2f},{rect[1]:.2f},{rect[2]:.2f},{rect[3]:.2f}"]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     if r.returncode != 0:
         fail(f"screencapture failed: {r.stderr.strip()}", code=r.returncode)
     if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
         fail("screencapture produced no output")
     pw, ph = png_size(out_path)
+    if args.region_px:
+        # 裁剪必须真发生：PNG 像素 == 期望值（resolve_rect 的逆运算，scale 用换算时
+        # 的同一个值）。不校验的话，未裁剪的全屏 PNG 会带着错误 scale 写进 meta，
+        # 污染下一次 --region-px 的换算（实测连锁：scale 8.55 → 下次 point_w 46.78）
+        if abs(pw - exp_px[0]) > 2 or abs(ph - exp_px[1]) > 2:
+            fail(f"region crop not applied: requested {exp_px[0]}x{exp_px[1]} px, "
+                 f"got {pw}x{ph}", code=1)
     meta = {
         "path": os.path.abspath(out_path),
         "display_id": disp["display_id"], "display_index": disp["index"],
@@ -558,7 +586,8 @@ def cmd_doctor(args):
         "accessibility": ax_status == "ok",
         "screen_recording": sr is True,
         "status": {"accessibility": ax_status,
-                   "screen-recording": "ok" if sr else "denied"},
+                   "screen-recording": {True: "ok", False: "denied",
+                                        None: "unknown"}[sr]},
     }
     try:
         app = NSWorkspace.sharedWorkspace().frontmostApplication()
@@ -582,10 +611,18 @@ def cmd_doctor(args):
     if sr is None:
         notes.append("Screen Recording status unknown (macOS < 10.15).")
     elif sr is not True:
+        # denied 是硬失败（screencapture 直接报错退出），不是静默坏图
         notes.append("Screen Recording permission missing: System Settings > "
                      "Privacy & Security > Screen Recording: enable it for the "
                      "host app (terminal/editor) and fully restart it. Without "
-                     "it, screencapture silently returns wallpaper-only images.")
+                     "it, screencapture fails outright (\"could not create image\").")
+    else:
+        # stale（授权后宿主未重启）preflight 照样 True，doctor 检不出——
+        # 唯一线索是截图回 ok 但内容只有壁纸，把这条指纹明示给调用方
+        notes.append("Screen Recording granted. Note: a stale TCC state (host "
+                     "not restarted after granting) is undetectable here; if "
+                     "screencapture returns ok with wallpaper-only images, "
+                     "fully restart the host app.")
     out(dict(ok=ok, checks=res, notes=notes))
 
 
@@ -623,8 +660,210 @@ def cmd_windows(args):
     out(dict(ok=True, windows=result))
 
 
+def _frontmost_app():
+    """前台真值。NSWorkspace.frontmostApplication() 在无 runloop 的 CLI 进程里
+    是 AppKit 连接建立时刻的冻结缓存（实测对真实前台切换全盲，一次读对、后续
+    全错），只能用无状态的 CGWindowList：最顶层 layer-0 常规窗口的属主就是
+    用户可见的前台。找不到 regular app（边界态）时退 NSWorkspace 兜底。"""
+    try:
+        opts = (Quartz.kCGWindowListOptionOnScreenOnly
+                | Quartz.kCGWindowListExcludeDesktopElements)
+        wins = Quartz.CGWindowListCopyWindowInfo(opts, Quartz.kCGNullWindowID) or []
+    except Exception:
+        wins = []
+    fallback = None
+    for w in wins:
+        if w.get("kCGWindowLayer", 99) != 0:
+            continue
+        pid = w.get("kCGWindowOwnerPID")
+        if not pid:
+            continue
+        try:
+            a = NSRunningApplication.runningApplicationWithProcessIdentifier_(int(pid))
+        except Exception:
+            a = None
+        if a is None:
+            continue
+        try:
+            regular = a.activationPolicy() == NSApplicationActivationPolicyRegular
+        except Exception:
+            regular = True
+        if regular:
+            return a
+        if fallback is None:
+            fallback = a
+    if fallback is not None:
+        return fallback
+    try:
+        return NSWorkspace.sharedWorkspace().frontmostApplication()
+    except Exception:
+        return None
+
+
+def _app_name(a):
+    try:
+        return a.localizedName() if a is not None else None
+    except Exception:
+        return None
+
+
+def _same_front(a, b):
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return a.processIdentifier() == b.processIdentifier()
+
+
+def _window_count(pid):
+    opts = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
+    wins = Quartz.CGWindowListCopyWindowInfo(opts, Quartz.kCGNullWindowID) or []
+    return sum(1 for w in wins if w.get("kCGWindowLayer", 99) == 0
+               and w.get("kCGWindowOwnerPID") == pid)
+
+
+def _hold_front(pid, timeout, hold, opened_pid=None):
+    """pid 成为前台并稳定持有 hold 秒才算数；期间被 opened_pid 抢回立即判负
+    （app 的 pending activate 会重放，形成拉锯，单次读会误判成功/失败）。"""
+    deadline = time.time() + timeout
+    seen = False
+    holds = 0
+    need = max(2, int(hold / 0.25))
+    while time.time() < deadline:
+        cur = _frontmost_app()
+        cur_pid = cur.processIdentifier() if cur else None
+        if cur_pid == pid:
+            seen = True
+            holds += 1
+            if holds >= need:
+                return True
+        else:
+            if seen and opened_pid and cur_pid == opened_pid:
+                return False
+            holds = 0
+        time.sleep(0.25)
+    return False
+
+
+def _restore_frontmost(prev, opened_pid=None, rounds=4):
+    """把 open 抢掉的前台拉回来。osascript(System Events) 为主（CLI 进程实测可用），
+    activateWithOptions 为备；恢复是异步且可能被 app 的重放激活打回去——按轮重试，
+    每轮要求稳定持有 1s。返回 (restored, via)。"""
+    if prev is None:
+        return False, "none"
+    used = []
+    for i in range(rounds):
+        if i % 2 == 0:
+            r = subprocess.run(
+                ["osascript", "-e",
+                 f'tell application "System Events" to set frontmost of '
+                 f'(first process whose unix id is {prev.processIdentifier()}) to true'],
+                capture_output=True, text=True, timeout=5)
+            used.append(f"system-events(rc={r.returncode})")
+        else:
+            try:
+                prev.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+                used.append("nsrunningapplication")
+            except Exception:
+                used.append("nsrunningapplication-failed")
+        if _hold_front(prev.processIdentifier(), 2.5, 1.0, opened_pid):
+            return True, used[-1]
+    # 拉锯可能刚好在末轮后平息——裁决看最终稳定态，不看最后一轮的持有检查
+    if _hold_front(prev.processIdentifier(), 3.0, 1.5):
+        return True, used[-1] + "+settled"
+    return False, "+".join(used)
+
+
+def _restore_frontmost_by_pid(pid, opened_pid=None, rounds=4):
+    prev = next((a for a in running_apps() if a.processIdentifier() == pid), None)
+    if prev is None:
+        return False, "gone"
+    return _restore_frontmost(prev, opened_pid=opened_pid, rounds=rounds)
+
+
+WATCHDOG_MS = 12000     # 单发看门狗观察期：实测 QQ音乐 类激活落地 0.5s~4s+ 且会重放拉锯
+WATCHDOG_MAX_RESTORES = 2
+WATCHDOG_PATH = os.path.join(META_DIR, "foreground-watchdog.json")
+
+
+def cmd_watchforeground(args):
+    """内部命令（open --background 的看门狗，不进 SKILL 命令表）。
+
+    非常驻 daemon：单发、有界（WATCHDOG_MS）、只针对被 open 的那个 app——
+    观察期内前台连续两读落回 opened_pid 就把 restore_pid 拉回来（最多
+    WATCHDOG_MAX_RESTORES 次，app 的重放激活会跟恢复拉锯）；用户主动切到
+    其它 app 不干预。观察期结束以最终稳定前台裁决 restored 并落盘
+    WATCHDOG_PATH 供追查——restored 指“restore_pid 稳定持有前台”这个结局，
+    不指某一次恢复尝试的回执（从未被抢也为 true）。"""
+    deadline = time.time() + args.timeout / 1000.0
+    result = {"armed_at": time.time(), "restore_pid": args.restore_pid,
+              "opened_pid": args.opened_pid, "timeout_ms": args.timeout,
+              "fired": False, "fired_at": None, "restores": 0, "attempts": []}
+    strikes = 0
+    while time.time() < deadline:
+        cur = _frontmost_app()
+        cur_pid = cur.processIdentifier() if cur else None
+        if cur_pid == args.opened_pid and args.opened_pid != args.restore_pid:
+            strikes += 1
+            if strikes >= 2 and result["restores"] < WATCHDOG_MAX_RESTORES:
+                if result["fired_at"] is None:
+                    result["fired_at"] = time.time()
+                result["fired"] = True
+                ok, via = _restore_frontmost_by_pid(args.restore_pid,
+                                                    opened_pid=args.opened_pid)
+                result["restores"] += 1
+                result["attempts"].append(
+                    {"at": round(time.time(), 3), "ok": ok, "via": via})
+                strikes = 0
+        else:
+            strikes = 0
+        time.sleep(0.3)
+    final = _frontmost_app()
+    final_pid = final.processIdentifier() if final else None
+    held = _hold_front(final_pid, 2.0, 1.0) if final_pid is not None else False
+    result.update(final_pid=final_pid, final_front=_app_name(final),
+                  final_held=held,
+                  restored=bool(held and final_pid == args.restore_pid),
+                  finished_at=time.time())
+    try:
+        os.makedirs(META_DIR, exist_ok=True)
+        with open(WATCHDOG_PATH, "w") as f:
+            json.dump(result, f)
+    except Exception:
+        pass
+
+
+def _open_trace(*a):
+    """CU_OPEN_TRACE=1 时把 open 的时序决定打到 stderr（排障异步激活竞态用）。"""
+    if os.environ.get("CU_OPEN_TRACE"):
+        sys.stderr.write(f"[open-trace {time.time():.3f}] "
+                         + " ".join(str(x) for x in a) + "\n")
+
+
 def cmd_open(args):
-    if args.bundle_id:
+    if args.force and args.url:
+        fail("--force 只对应用名/--bundle-id 有意义（重开窗口靠 reopen 事件）")
+    spec = args.bundle_id or args.app
+    # 已运行判定只对 app 目标做（--url 的默认 handler 是另一层解析，不做 skip）
+    existing = _find_running(spec) if spec else None
+    front_before = _frontmost_app()
+    _open_trace("front_before", _app_name(front_before),
+                front_before.processIdentifier() if front_before else None)
+    if existing is not None and args.background and not args.force:
+        # 已运行 + --background：不发 open 事件——app 收到 reopen 会自激活，-g 按不住
+        # （QQ音乐/QQ/微信/VSCode/Chrome 实测抢前台，TextEdit/访达不抢，按 app 而定）。
+        # 直接交句柄；零窗口时由调用方决定 --force 重开或 key --app 造窗
+        pid = existing.processIdentifier()
+        out(dict(ok=True, opened=spec, via="resolve", mode="already_running",
+                 pid=pid, windows=_window_count(pid),
+                 frontmost_after=_app_name(_frontmost_app())))
+        return
+    # --force 且已运行：用现有实例的 bundle-id 走 -b——本地化名 open -a 可能找不到
+    # （QQ音乐 实测 "Unable to find application"）
+    if args.force and existing is not None and existing.bundleIdentifier():
+        bid = existing.bundleIdentifier()
+        target, cmd, via = bid, ["open", "-b", bid], "bundle-id"
+    elif args.bundle_id:
         target, cmd, via = args.bundle_id, ["open", "-b", args.bundle_id], "bundle-id"
     elif args.url:
         target, cmd, via = args.url, ["open", args.url], "url"
@@ -632,13 +871,64 @@ def cmd_open(args):
         target, cmd, via = args.app, ["open", "-a", args.app], "name"
     else:
         fail("open 需要 app 名、--bundle-id 或 --url 之一")
+    if args.background:
+        cmd.insert(1, "-g")
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         fail(f"open failed: {r.stderr.strip()}")
     time.sleep(args.settle / 1000.0)
-    app = NSWorkspace.sharedWorkspace().frontmostApplication()
-    out(dict(ok=True, opened=target, via=via,
-             frontmost=app.localizedName() if app else None))
+    if not args.background:
+        app = _frontmost_app()
+        out(dict(ok=True, opened=target, via=via,
+                 frontmost=app.localizedName() if app else None))
+        return
+    # --background 是结束状态保证。自激活是异步的且会重放拉锯（QQ音乐 实测
+    # 0.5s~4s+ 落地）：inline 轮询抓快抢，单发看门狗子进程兜迟到的
+    opened_pid = 0
+    if not args.url:
+        app_now = existing if existing is not None else _find_running(target)
+        if app_now is not None:
+            opened_pid = app_now.processIdentifier()
+    deadline = time.time() + max(args.settle / 1000.0, 1.5)
+    front_now = _frontmost_app()
+    _open_trace("poll-start", _app_name(front_now))
+    while _same_front(front_before, front_now) and time.time() < deadline:
+        time.sleep(0.25)
+        front_now = _frontmost_app()
+        _open_trace("poll", _app_name(front_now),
+                    front_now.processIdentifier() if front_now else None)
+    mode = "forced_reopen" if existing is not None else (
+        "url" if args.url else "launched_cold")
+    payload = dict(opened=target, via=via, mode=mode,
+                   frontmost_before=_app_name(front_before))
+    if _same_front(front_before, front_now):
+        payload.update(ok=True, frontmost_after=_app_name(front_now))
+    else:
+        payload["foreground_stolen_by"] = _app_name(front_now)
+        restored, rvia = _restore_frontmost(front_before, opened_pid=opened_pid,
+                                            rounds=2)
+        final = _frontmost_app()
+        payload["frontmost_after"] = _app_name(final)
+        payload.update(frontmost_restored=restored, restored_via=rvia)
+        if restored and _same_front(front_before, final):
+            payload["ok"] = True
+        else:
+            # 功能可能已达成（窗口已开出），但后台保证破了——数据全量保留，如实报告
+            payload.update(ok=False, code="foreground_stolen",
+                           error="open stole the foreground and restore failed; "
+                                 "report honestly, do not treat as background success")
+    # 看门狗无论 inline 成败都要落：inline 恢复失败可能只是拉锯未平息，
+    # 看门狗的观察期+终态裁决是前台保证的最后一道兜底
+    if (opened_pid and front_before is not None
+            and opened_pid != front_before.processIdentifier()):
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "watchforeground",
+             "--restore-pid", str(front_before.processIdentifier()),
+             "--opened-pid", str(opened_pid), "--timeout", str(WATCHDOG_MS)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        payload["watchdog_ms"] = WATCHDOG_MS
+    out(payload)
 
 
 def cmd_wait(args):
@@ -652,7 +942,10 @@ def cmd_clipboard(args):
         out(dict(ok=True, text=text.decode("utf-8", "replace")))
     else:
         r = subprocess.run(["pbcopy"], input=args.text.encode(), timeout=5)
-        out(dict(ok=True, set=True, r=r.returncode))
+        if r.returncode != 0:
+            fail(f"pbcopy failed (code {r.returncode}): clipboard not set",
+                 code=r.returncode)
+        out(dict(ok=True, set=True))
 
 
 # ---------------------------------------------------------------- OCR (Vision)
@@ -821,6 +1114,51 @@ def running_apps():
             if a.activationPolicy() == 0 and a.processIdentifier() > 0]
 
 
+def _app_names(a):
+    """应用的可匹配名集合（localizedName/bundle 名/可执行名，小写）。"""
+    vals = {a.localizedName() or ""}
+    try:
+        bp = a.bundleURL().lastPathComponent() or ""
+        if bp.endswith(".app"):
+            bp = bp[:-4]
+        vals.add(bp)
+    except Exception:
+        pass
+    try:
+        vals.add(a.executableName() or "")
+    except AttributeError:
+        pass
+    return {v.lower() for v in vals if v}
+
+
+def _find_running(spec):
+    """open 用的已运行实例查找（NSWorkspace 口径，不发 open 事件）：
+    返回 NSRunningApplication；未运行返回 None；名字歧义 fail-closed。
+    与 resolve_app 同一套分层匹配（exact→prefix→substring）。"""
+    apps = running_apps()
+    spec = str(spec)
+    if spec.lstrip("-").isdigit():
+        pid = int(spec)
+        return next((a for a in apps if a.processIdentifier() == pid), None)
+    low = spec.lower()
+    if "." in spec:
+        hit = next((a for a in apps if (a.bundleIdentifier() or "").lower() == low),
+                   None)
+        if hit is not None:
+            return hit
+    by_name = [(a, n) for a in apps for n in _app_names(a)]
+    for match in (lambda n: n == low, lambda n: n.startswith(low), lambda n: low in n):
+        hits = [a for a, n in by_name if match(n)]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            fail(f"'{spec}' 匹配到多个运行中实例："
+                 + ", ".join(f"{a.localizedName()}({a.processIdentifier()})"
+                             for a in hits[:6]),
+                 hint="用 pid 或 --bundle-id 精确指定")
+    return None
+
+
 def resolve_app(spec):
     """pid | bundle-id | 应用名 → NSRunningApplication；唯一才通过（fail-closed）。"""
     apps = running_apps()
@@ -836,20 +1174,6 @@ def resolve_app(spec):
         hits = [a for a in apps if (a.bundleIdentifier() or "").lower() == low]
         if hits:
             return hits[0]
-    def _app_names(a):
-        vals = {a.localizedName() or ""}
-        try:
-            bp = a.bundleURL().lastPathComponent() or ""
-            if bp.endswith(".app"):
-                bp = bp[:-4]
-            vals.add(bp)
-        except Exception:
-            pass
-        try:
-            vals.add(a.executableName() or "")
-        except AttributeError:
-            pass
-        return {v.lower() for v in vals if v}
 
     by_name = [(a, n) for a in apps for n in _app_names(a)]
     for match in (lambda n: n == low, lambda n: n.startswith(low), lambda n: low in n):
@@ -1501,6 +1825,20 @@ def main():
     sp.add_argument("--bundle-id", default=None, help="e.g. com.apple.TextEdit")
     sp.add_argument("--url", default=None, help="open a URL with the default handler")
     sp.add_argument("--settle", type=int, default=1200, help="ms to wait for launch")
+    sp.add_argument("--background", action="store_true",
+                    help="guarantee background end-state: skip if already running "
+                         "(mode=already_running), cold-launch with open -g, restore "
+                         "foreground if an open event steals it; judge by "
+                         "frontmost_after, not by ok alone")
+    sp.add_argument("--force", action="store_true",
+                    help="with --background: reopen even if already running "
+                         "(sends reopen event -> window; foreground restored after")
+
+    sp = sub.add_parser("watchforeground",
+                        help="internal: late-activation watchdog for open --background")
+    sp.add_argument("--restore-pid", type=int, required=True)
+    sp.add_argument("--opened-pid", type=int, required=True)
+    sp.add_argument("--timeout", type=int, default=WATCHDOG_MS)
 
     sp = sub.add_parser("clipboard")
     sp.add_argument("action", choices=("get", "set"))
