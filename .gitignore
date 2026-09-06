@@ -14,5 +14,15 @@ Thumbs.db
 *.swo
 *~
 
+# Python / skill runtime
+.venv/
+__pycache__/
+
+# Node（安装 CLI 零依赖，防御性排除）
+node_modules/
+
+# ZCode 工作区本地状态
+.zcode/
+
 # OS
 .DS_Store

@@ -1,0 +1,17 @@
+{
+  "name": "omg-skill",
+  "version": "0.1.0",
+  "description": "OMG Skills —— AI 智能体技能库与安装 CLI",
+  "type": "module",
+  "bin": {
+    "omg-skill": "src/index.mjs"
+  },
+  "scripts": {
+    "cli": "node src/index.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true,
+  "license": "MIT"
+}
