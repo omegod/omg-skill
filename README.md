@@ -103,6 +103,10 @@ cp -r resources/skill/claude-opus-5-ui-aesthetics ~/.claude/skills/claude-opus-5
 omg-skill/
 ├── README.md
 ├── package.json                     # 安装 CLI 的包信息（零依赖，bin: omg-skill）
+├── docs/                            # 版本文档（spec 及其历史版本，见 docs/README.md）
+│   ├── README.md                    # 索引与版本管理约定
+│   ├── browser-use-spec.md          # bu 0.1 规格（浏览器自动化，对标 ZCode browser-use，草案）
+│   └── computer-use-spec.md         # cu 2.1 规格 + 2.2 增补（已实现，归档）
 ├── resources/
 │   └── skill/                       # 全部技能（一个技能一个目录，安装 CLI 自动发现）
 │       ├── gemini-3.6-flash-ui-aesthetics/      # UI 美学：Gemini 3.6 Flash 惊艳质感派
@@ -128,7 +132,6 @@ omg-skill/
 │       └── computer-use/                        # 工具类：macOS 桌面自动化（纯视觉模型）
 │           ├── SKILL.md                         # 技能主文件（核心循环/坐标契约/安全边界）
 │           ├── RESEARCH.md                      # 实现方案调研报告
-│           ├── SPEC.md                          # cu 2.0 规格（对齐 ZCode CUA 的能力升级）
 │           ├── references/
 │           │       └── troubleshooting.md       # 权限/坐标/OCR 排错对照表
 │           └── scripts/
